@@ -1,7 +1,6 @@
 # ===== 构建产物 / Build artifacts =====
-# 打包生成的单文件 exe 与 PyInstaller 临时构建目录，非源码
+# PyInstaller 临时构建目录（仅临时产物，不提交）
 build/
-dist/
 __pycache__/
 *.pyc
 
@@ -11,9 +10,8 @@ coordinates.json
 # 项目本地数据目录（非源码、非缓存）
 .workbuddy/
 
-# ===== 预览 / 截图（非源码） =====
-preview.png
-
-# 需要保留的源码与资源（不忽略）：
+# 需要保留的源码、资源与产物（不忽略）：
 #   auto_clicker.py  README.md  AutoClickerPro.spec
 #   app.ico  gen_icon.py  screenshot.py  run.bat
+#   dist/  （已打包的 AutoClickerPro.exe，按用户要求一并提交）
+#   preview.png  （界面预览图，按用户要求一并提交）

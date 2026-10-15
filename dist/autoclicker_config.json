@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "settings": {
+    "interval": 1000,
+    "dbl_gap": 60,
+    "loops": 0,
+    "offset": 0,
+    "jitter": 0,
+    "default_type": "left",
+    "smooth": false,
+    "topmost": false,
+    "minimize": false
+  },
+  "hotkeys": {
+    "pick": [
+      119
+    ],
+    "toggle": [
+      120
+    ]
+  }
+}
