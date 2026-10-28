@@ -225,6 +225,7 @@ PANEL = "#222c3a"     # 面板
 PANEL2 = "#2c3849"    # 按钮 / 输入框
 CARD = "#1e2734"      # 表格 / 输入区
 BORDER = "#3a4759"    # 分隔线 / 边框
+PANEL_BORDER = "#4b6076"  # 面板外框（比内部分隔线更明显）
 ACCENT = "#22d3ee"    # 青色强调
 ACCENT2 = "#a78bfa"   # 紫色强调
 OK = "#34d399"
@@ -257,7 +258,7 @@ CONFIG_PATH = os.path.join(BASE_DIR, "autoclicker_config.json")
 class AutoClicker:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Auto Clicker Pro  ·  鼠标自动点击器")
+        self.root.title("辰光鼠标自动点击器 · 多坐标批量自动点击")
         self.root.geometry("642x450")
         self.root.minsize(640, 400)
         self.root.configure(bg=BG)
@@ -294,12 +295,158 @@ class AutoClicker:
         self._build_ui()
         self._load_params(silent=True)
 
+        self.root.after(0, self._style_borderless)
+        # 窗口真正映射/还原后再次应用，避免时机过早导致失效
+        self.root.bind("<Map>", lambda e: self._style_borderless(), add="+")
         self.root.after(60, self._drain)
         self.root.after(80, self._hotkey_tick)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.bind("<Escape>", lambda e: self._stop() if self.running else None)
 
     # ----------------------------- 样式 -----------------------------
+    def _style_borderless(self):
+        """移除原生标题栏（WS_CAPTION），由自绘白色标题栏接管。
+        保留 WS_THICKFRAME：任务栏图标、窗口缩放、Snap 均正常。
+        注意：64 位下必须声明 argtypes/restype，否则 LONG_PTR 被截断而静默失效。"""
+        try:
+            import ctypes.wintypes as wt
+            u = ctypes.windll.user32
+            GWL_STYLE = -16
+            WS_CAPTION = 0x00C00000
+
+            getter, setter = u.GetWindowLongPtrW, u.SetWindowLongPtrW
+            if not hasattr(u, "GetWindowLongPtrW"):
+                getter, setter = u.GetWindowLongW, u.SetWindowLongW
+            getter.restype = ctypes.c_longlong
+            getter.argtypes = [wt.HWND, ctypes.c_int]
+            setter.restype = ctypes.c_longlong
+            setter.argtypes = [wt.HWND, ctypes.c_int, ctypes.c_longlong]
+            u.IsWindow.argtypes = [wt.HWND]
+
+            hwnds = []
+            try:
+                hwnds.append(int(self.root.wm_frame(), 16))
+            except Exception:
+                pass
+            try:
+                hwnds.append(u.GetParent(self.root.winfo_id()))
+            except Exception:
+                pass
+            try:
+                hwnds.append(self.root.winfo_id())
+            except Exception:
+                pass
+
+            for hwnd in hwnds:
+                if not hwnd or not u.IsWindow(hwnd):
+                    continue
+                style = getter(hwnd, GWL_STYLE)
+                if not (style & WS_CAPTION):
+                    continue
+                # 记录 Tk 视角的尺寸，样式改完后还原（标题栏腾出的高度会被内容吸收）
+                w, h = self.root.winfo_width(), self.root.winfo_height()
+                setter(hwnd, GWL_STYLE, style & ~WS_CAPTION)
+                # SWP_FRAMECHANGED | SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER
+                u.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                               0x0020 | 0x0001 | 0x0002 | 0x0004)
+                if w > 1 and h > 1:
+                    self.root.geometry("%dx%d" % (w, h))
+                return True
+        except Exception:
+            pass
+        return False  # 失败时退化为双栏显示
+
+    def _tb_btn(self, parent, text, cmd, bg="#ffffff", fg="#333333", padx=10):
+        b = tk.Label(parent, text=text, bg=bg, fg=fg, font=(FONT, 11),
+                     padx=padx, cursor="hand2")
+        b.pack(side="right")
+        b.bind("<Enter>", lambda e: b.config(fg=ACCENT))
+        b.bind("<Leave>", lambda e: b.config(fg=fg))
+        b.bind("<Button-1>", lambda e: cmd())
+        return b
+
+    def _tb_icon_btn(self, parent, cmd, bg="#ffffff", fg="#333333"):
+        """圆形 '?' 帮助图标"""
+        c = tk.Canvas(parent, width=20, height=20, bg=bg,
+                      highlightthickness=0, cursor="hand2")
+        oval = c.create_oval(2, 2, 18, 18, outline=fg, width=1)
+        mark = c.create_text(10, 10, text="?", fill=fg, font=(FONT, 9, "bold"))
+        c.pack(side="right", padx=(4, 8))
+        c.bind("<Enter>", lambda e: (c.itemconfig(oval, outline=ACCENT),
+                                     c.itemconfig(mark, fill=ACCENT)))
+        c.bind("<Leave>", lambda e: (c.itemconfig(oval, outline=fg),
+                                     c.itemconfig(mark, fill=fg)))
+        c.bind("<Button-1>", lambda e: cmd())
+        return c
+
+    def _frame_hwnd(self):
+        """取窗口外层 wrapper 的 HWND（Tk 顶层窗口不能直接改样式）"""
+        if getattr(self, "_hwnd", None):
+            return self._hwnd
+        try:
+            u = ctypes.windll.user32
+            for h in (int(self.root.wm_frame(), 16),
+                      u.GetParent(self.root.winfo_id())):
+                if h and u.IsWindow(h):
+                    self._hwnd = h
+                    return h
+        except Exception:
+            pass
+        return 0
+
+    def _tb_press(self, e):
+        """按下标题栏：交给 Windows 原生移动循环（平滑、无重影、支持贴边 Snap）。
+
+        关键：必须用 PostMessage（异步）而不是 SendMessage。
+        SendMessage 会在 Tk 绑定回调内部同步进入 Windows 的模态移动循环，
+        Tk 被重入后 Tcl panic → 进程 Aborted（表现为"一按就闪退、拖不动"）。
+        PostMessage 只把消息排入队列，等本回调返回后由消息循环处理，不会重入。
+        """
+        self._drag_manual = False
+        try:
+            import ctypes.wintypes as wt
+            u = ctypes.windll.user32
+            hwnd = self._frame_hwnd()
+            if not hwnd:
+                raise RuntimeError("no hwnd")
+            try:
+                if self.root.state() == "zoomed":
+                    raise RuntimeError("maximized: let system handle")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+            pt = wt.POINT()
+            if not u.GetCursorPos(ctypes.byref(pt)):
+                raise RuntimeError("cursor pos failed")
+            post = u.PostMessageW
+            post.argtypes = [wt.HWND, ctypes.c_uint,
+                             ctypes.c_uint, ctypes.c_long]
+            post.restype = ctypes.c_bool
+            u.ReleaseCapture()
+            ok = post(hwnd, 0x00A1, 2, (pt.y << 16) | (pt.x & 0xFFFF))
+            if not ok:
+                raise RuntimeError("PostMessage failed")
+            return
+        except Exception:
+            self._drag_manual = True
+            self._tb_dx = e.x_root - self.root.winfo_x()
+            self._tb_dy = e.y_root - self.root.winfo_y()
+
+    def _tb_move(self, e):
+        """仅在原生拖动不可用时的回退方案"""
+        if not getattr(self, "_drag_manual", False):
+            return
+        try:
+            if self.root.state() == "zoomed":
+                return
+        except Exception:
+            pass
+        x = e.x_root - self._tb_dx
+        y = e.y_root - self._tb_dy
+        if (x, y) != (self.root.winfo_x(), self.root.winfo_y()):
+            self.root.geometry("+%d+%d" % (x, y))
+
     def _load_icon(self):
         for base in (getattr(sys, "_MEIPASS", None), BASE_DIR):
             if not base:
@@ -362,7 +509,8 @@ class AutoClicker:
     # ----------------------------- UI -----------------------------
     def _panel(self, parent, **kw):
         f = tk.Frame(parent, bg=PANEL, highlightthickness=1,
-                     highlightbackground=BORDER, highlightcolor=BORDER, **kw)
+                     highlightbackground=PANEL_BORDER,
+                     highlightcolor=PANEL_BORDER, **kw)
         return f
 
     def _section_title(self, parent, text, accent=ACCENT):
@@ -418,30 +566,55 @@ class AutoClicker:
         return cell
 
     def _build_ui(self):
-        # ---------- 顶栏 ----------
-        head = tk.Frame(self.root, bg=BG, height=44)
-        head.pack(fill="x", padx=12, pady=(8, 4))
-        head.pack_propagate(False)
+        # ---------- 自绘标题栏（仿原生白色标题栏；原生标题栏已隐藏） ----------
+        TB_BG, TB_FG = "#ffffff", "#333333"
+        tb = tk.Frame(self.root, bg=TB_BG, height=30)
+        tb.pack(fill="x")
+        tb.pack_propagate(False)
 
-        logo = tk.Canvas(head, width=28, height=28, bg=BG, highlightthickness=0)
-        logo.pack(side="left")
-        for r, c in ((12, "#3c6f80"), (8, "#1f9cb8"), (4, ACCENT)):
-            logo.create_oval(14 - r, 14 - r, 14 + r, 14 + r, outline=c, width=2)
-        logo.create_oval(12, 12, 16, 16, fill=ACCENT, outline=ACCENT)
+        # 左侧：辰光 logo + 标题（同时也是拖动区）
+        self._logo_img = None
+        logo_widget = None
+        for base in (getattr(sys, "_MEIPASS", None), BASE_DIR):
+            if not base:
+                continue
+            p = os.path.join(base, "logo.png")
+            if os.path.exists(p):
+                try:
+                    self._logo_img = tk.PhotoImage(file=p)
+                    logo_widget = tk.Label(tb, image=self._logo_img, bg=TB_BG)
+                except Exception:
+                    self._logo_img = None
+            if self._logo_img is not None:
+                break
+        if logo_widget is None:
+            logo_widget = tk.Canvas(tb, width=20, height=20, bg=TB_BG,
+                                    highlightthickness=0)
+            for r, c in ((9, "#3c6f80"), (6, "#1f9cb8"), (3, ACCENT)):
+                logo_widget.create_oval(10 - r, 10 - r, 10 + r, 10 + r,
+                                        outline=c, width=2)
+            logo_widget.create_oval(8, 8, 12, 12, fill=ACCENT, outline=ACCENT)
+        logo_widget.pack(side="left", padx=(10, 6), pady=(5, 5))
 
-        tf = tk.Frame(head, bg=BG)
-        tf.pack(side="left", padx=8)
-        tk.Label(tf, text="AUTO CLICKER PRO", bg=BG, fg=TEXT,
-                 font=(FONT, 12, "bold")).pack(anchor="w")
-        tk.Label(tf, text="多坐标批量自动点击", bg=BG, fg=TEXT_DIM,
-                 font=(FONT, 8)).pack(anchor="w")
+        title_lbl = tk.Label(tb, text="鼠标自动点击器 · 多坐标批量自动点击", bg=TB_BG, fg=TB_FG,
+                             font=(FONT, 10, "bold"))
+        title_lbl.pack(side="left")
 
-        self._btn(head, "帮助", self._show_help, "ghost", padx=8).pack(
-            side="right", padx=(0, 5))
+        # 右侧按钮（从右往左打包 → 视觉顺序 [?] [—] [✕]，? 在最小化左边）
+        self._tb_btn(tb, "✕", self._on_close, bg=TB_BG, fg=TB_FG, padx=12)
+        self._tb_btn(tb, "—", self.root.iconify, bg=TB_BG, fg=TB_FG, padx=12)
+        self._tb_icon_btn(tb, self._show_help, bg=TB_BG, fg=TB_FG)
+
+        # 整条标题栏可拖动窗口
+        for w in (tb, logo_widget, title_lbl):
+            w.bind("<Button-1>", self._tb_press)
+            w.bind("<B1-Motion>", self._tb_move)
+
+        tk.Frame(self.root, bg="#d9d9d9", height=1).pack(fill="x")
 
         # ---------- 主体 ----------
         body = tk.Frame(self.root, bg=BG)
-        body.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        body.pack(fill="both", expand=True, padx=12, pady=(12, 8))
         body.columnconfigure(0, weight=1)
         body.columnconfigure(1, weight=0, minsize=264)
         body.rowconfigure(0, weight=1)

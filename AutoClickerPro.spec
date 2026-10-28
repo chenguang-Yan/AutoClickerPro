@@ -5,7 +5,7 @@ a = Analysis(
     ['auto_clicker.py'],
     pathex=[],
     binaries=[],
-    datas=[('app.ico', '.')],
+    datas=[('app.ico', '.'), ('logo.png', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

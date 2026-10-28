@@ -4,6 +4,10 @@ build/
 __pycache__/
 *.pyc
 
+# ===== 设计探索稿 / Design explorations =====
+# AI 生成的 logo 候选稿（约 13MB，仅本地留档；最终采用版已放进 assets/）
+logo_designs/
+
 # ===== 隐私 / 个人数据 =====
 # 用户真实点击坐标（含屏幕分辨率/布局信息），不对外公开
 coordinates.json
